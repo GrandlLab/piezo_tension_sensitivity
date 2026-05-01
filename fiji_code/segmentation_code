@@ -1,0 +1,393 @@
+// ============================================
+// EXPERIMENT SETTINGS - EDIT THESE ONLY
+// ============================================
+exp_date = "2026_03_16";
+condition = "max-22";
+cell_number = "2";
+fp = "yfp";
+magnification = "100x";
+experimenter = "mgm";
+
+// ============================================
+// AUTO-BUILD FILE NAMES FROM SETTINGS
+// ============================================
+fp_label = fp;
+
+if (fp == "yfp") {
+    fp_suffix = "_yfp-cellpose.tif";
+} else {
+    fp_suffix = "_mch-cellpose.tif";
+}
+
+img_base = exp_date + "_" + condition + "_" + experimenter + "_" + magnification + "_" + cell_number;
+mask_title = img_base + fp_suffix;
+membrane_title = img_base + "_647.tif";
+
+// ============================================
+// SAVE PATH AND FILE NAMING
+// ============================================
+save_path = "F:\\exon22_imaging_data\\";
+base_name = img_base + "_" + fp_label;
+csv_name = base_name + "_intensity_data.csv";
+
+print("Mask: " + mask_title);
+print("Membrane: " + membrane_title);
+print("Base name: " + base_name);
+print("Fluorescent protein: " + fp_label);
+print("Saving files to: " + save_path);
+
+// ============================================
+// STEP 0 - MEASURE BACKGROUND FIRST
+// ============================================
+selectWindow(membrane_title);
+run("Duplicate...", "title=MemForBackground");
+run("Enhance Contrast", "saturated=0.35");
+setTool("rectangle");
+waitForUser("Draw a background ROI in an empty region outside all cells on the 647 image, then click OK");
+run("Set Measurements...", "mean redirect=None decimal=3");
+getStatistics(area, mean_background, min, max, std);
+print("Mean background: " + mean_background);
+selectWindow("MemForBackground");
+close();
+
+selectWindow(membrane_title);
+run("Select None");
+selectWindow(mask_title);
+run("Select None");
+
+// ============================================
+// GET IMAGE DIMENSIONS ONCE
+// ============================================
+selectWindow(membrane_title);
+img_width = getWidth();
+img_height = getHeight();
+
+// ============================================
+// FIND MAX LABEL VALUE
+// ============================================
+selectWindow(mask_title);
+getStatistics(area, mean, min, max);
+num_labels = max;
+print("Max label value: " + num_labels);
+
+// ============================================
+// HEX HELPER FUNCTION
+// ============================================
+function toHex(n) {
+    n = round(n);
+    if (n < 0) n = 0;
+    if (n > 255) n = 255;
+    hex_chars = "0123456789ABCDEF";
+    high = floor(n / 16);
+    low = n - (high * 16);
+    return substring(hex_chars, high, high+1) + substring(hex_chars, low, low+1);
+}
+
+// ============================================
+// CREATE GLASBEY CELL MAP AND STORE HEX COLORS
+// ============================================
+selectWindow(mask_title);
+run("Duplicate...", "title=GlasbeyMap");
+run("Glasbey");
+run("RGB Color");
+
+hex_colors = newArray(num_labels + 1);
+for (i = 0; i <= num_labels; i++) hex_colors[i] = "#000000";
+
+for (i = 1; i <= num_labels; i++) {
+
+    selectWindow(mask_title);
+    run("Duplicate...", "title=TempColorCell");
+    setThreshold(i, i);
+    run("Convert to Mask");
+    getStatistics(area, mean_check, min, max_check);
+
+    if (mean_check == 0) {
+        selectWindow("TempColorCell");
+        close();
+        continue;
+    }
+
+    // Scan for first foreground pixel
+    found = false;
+    found_x = 0;
+    found_y = 0;
+    for (py = 0; py < img_height; py++) {
+        if (found) py = img_height;
+        for (px = 0; px < img_width; px++) {
+            if (getPixel(px, py) > 0) {
+                found_x = px;
+                found_y = py;
+                found = true;
+                px = img_width;
+            }
+        }
+    }
+
+    selectWindow("TempColorCell");
+    close();
+
+    selectWindow("GlasbeyMap");
+    v = getPixel(found_x, found_y);
+    r_val = (v >> 16) & 0xff;
+    g_val = (v >> 8) & 0xff;
+    b_val = v & 0xff;
+    hex_colors[i] = "#" + toHex(r_val) + toHex(g_val) + toHex(b_val);
+    print("Cell " + i + " color: " + hex_colors[i]);
+}
+
+label_map_name = base_name + "_cell_labels.tif";
+selectWindow("GlasbeyMap");
+saveAs("Tiff", save_path + label_map_name);
+rename("GlasbeyMap");
+print("Saved Glasbey cell map: " + label_map_name);
+
+// ============================================
+// CLEAR RESULTS TABLE FRESH
+// ============================================
+run("Clear Results");
+
+// ============================================
+// RUN ANALYSIS FOR BOTH ANNULUS SIZES
+// ============================================
+annulus_settings = newArray(10, 24, 7, 19);
+
+for (s = 0; s < annulus_settings.length; s += 2) {
+
+    annulus_out = annulus_settings[s];
+    annulus_in = annulus_settings[s+1];
+
+    print("==============================");
+    print("Running with annulus_out=" + annulus_out + " annulus_in=" + annulus_in);
+    print("==============================");
+
+    suffix = "_out" + annulus_out + "_in" + annulus_in;
+    mem_overlay_name = base_name + suffix + "_mem_overlay.tif";
+    cyto_overlay_name = base_name + suffix + "_cyto_overlay.tif";
+    annulus_name = base_name + suffix + "_annulus.tif";
+
+    // ============================================
+    // STEP 1 - CREATE ANNULUS FROM FULL MASK
+    // ============================================
+    selectWindow(mask_title);
+    run("Duplicate...", "title=MaskExpanded");
+    selectWindow(mask_title);
+    run("Duplicate...", "title=MaskShrunken");
+    selectWindow("MaskExpanded");
+    run("Maximum...", "radius=" + annulus_out);
+    selectWindow("MaskShrunken");
+    run("Minimum...", "radius=" + annulus_in);
+    imageCalculator("Subtract create", "MaskExpanded", "MaskShrunken");
+    selectWindow("Result of MaskExpanded");
+    rename("Annulus");
+    selectWindow("MaskExpanded");
+    close();
+    selectWindow("MaskShrunken");
+    close();
+
+    selectWindow("Annulus");
+    run("Duplicate...", "title=AnnulusSave");
+    run("Glasbey");
+    run("RGB Color");
+    saveAs("Tiff", save_path + annulus_name);
+    close();
+    print("Saved annulus image");
+
+    // ============================================
+    // STEP 2 - CREATE BINARY ANNULUS FOR OVERLAY
+    // ============================================
+    selectWindow("Annulus");
+    run("Duplicate...", "title=AnnulusBinary");
+    setThreshold(1, 65535);
+    run("Convert to Mask");
+
+    // ============================================
+    // STEP 3 - MEMBRANE + ANNULUS OVERLAY
+    // ============================================
+    selectWindow(membrane_title);
+    run("Duplicate...", "title=MembraneForOverlay");
+    run("Red");
+    run("RGB Color");
+    selectWindow("AnnulusBinary");
+    run("Duplicate...", "title=AnnulusBinaryCopy");
+    selectWindow("MembraneForOverlay");
+    run("Add Image...", "image=AnnulusBinaryCopy x=0 y=0 opacity=50");
+    rename("Membrane_with_Annulus");
+    saveAs("Tiff", save_path + mem_overlay_name);
+    rename("Membrane_with_Annulus");
+    selectWindow("Membrane_with_Annulus");
+    close();
+    selectWindow("AnnulusBinaryCopy");
+    close();
+    print("Saved membrane overlay image");
+
+    // ============================================
+    // STEP 4 - FIND MAX LABEL VALUE
+    // ============================================
+    selectWindow(mask_title);
+    getStatistics(area, mean, min, max);
+    num_labels = max;
+    print("Max label value: " + num_labels);
+
+    // ============================================
+    // STEP 5 - BUILD CYTOPLASM MASK AND LOOP
+    // ============================================
+    newImage("CytoMaskAll", "8-bit black", img_width, img_height, 1);
+    cell_count = 0;
+
+    for (i = 1; i <= num_labels; i++) {
+
+        selectWindow(mask_title);
+        run("Duplicate...", "title=TempCheck");
+        setThreshold(i, i);
+        run("Convert to Mask");
+        getStatistics(area, mean_check, min, max_check);
+        selectWindow("TempCheck");
+        close();
+
+        if (mean_check == 0) {
+            print("Label " + i + " is empty - skipping");
+            continue;
+        }
+
+        print("Processing cell label " + i + "...");
+        cell_count++;
+
+        // --- Isolate single cell ---
+        selectWindow(mask_title);
+        run("Duplicate...", "title=SingleCell");
+        setThreshold(i, i);
+        run("Convert to Mask");
+
+        // --- Create single cell annulus ---
+        selectWindow("SingleCell");
+        run("Duplicate...", "title=SingleExpanded");
+        run("Maximum...", "radius=" + annulus_out);
+
+        selectWindow("SingleCell");
+        run("Duplicate...", "title=SingleShrunken");
+        run("Minimum...", "radius=" + annulus_in);
+
+        imageCalculator("Subtract create", "SingleExpanded", "SingleShrunken");
+        selectWindow("Result of SingleExpanded");
+        rename("SingleAnnulus");
+        selectWindow("SingleExpanded");
+        close();
+        selectWindow("SingleShrunken");
+        close();
+
+        // --- Measure membrane intensity ---
+        selectWindow("SingleAnnulus");
+        setThreshold(1, 255);
+        run("Create Selection");
+        resetThreshold();
+        selectWindow(membrane_title);
+        run("Restore Selection");
+        run("Set Measurements...", "mean redirect=None decimal=3");
+        getStatistics(area, mean_membrane, min, max, std);
+        run("Select None");
+        selectWindow("SingleAnnulus");
+        close();
+
+        // --- Create cytoplasm mask ---
+        selectWindow("SingleCell");
+        run("Duplicate...", "title=SingleCyto");
+        run("Minimum...", "radius=" + annulus_in);
+
+        imageCalculator("OR", "CytoMaskAll", "SingleCyto");
+
+        // --- Measure cytoplasm intensity ---
+        selectWindow("SingleCyto");
+        setThreshold(1, 255);
+        run("Create Selection");
+        resetThreshold();
+        selectWindow(membrane_title);
+        run("Restore Selection");
+        run("Set Measurements...", "mean redirect=None decimal=3");
+        getStatistics(area, mean_cytoplasm, min, max, std);
+        run("Select None");
+        selectWindow("SingleCyto");
+        close();
+        selectWindow("SingleCell");
+        close();
+
+        // --- Background corrected values ---
+        corr_membrane = mean_membrane - mean_background;
+        corr_cytoplasm = mean_cytoplasm - mean_background;
+        ratio = mean_membrane / mean_cytoplasm;
+
+        if (corr_cytoplasm > 0) {
+            corr_ratio = corr_membrane / corr_cytoplasm;
+        } else {
+            corr_ratio = -9999;
+            print("WARNING: Cell " + i + " corrected cytoplasm zero or negative - flagged as -9999");
+        }
+
+        // --- Save to results table using nResults as row index ---
+        row = nResults;
+        setResult("FP_Label", row, fp_label);
+        setResult("Annulus_Out", row, annulus_out);
+        setResult("Annulus_In", row, annulus_in);
+        setResult("Cell_Label", row, i);
+        setResult("Cell_Color_Hex", row, hex_colors[i]);
+        setResult("Mean_Background", row, mean_background);
+        setResult("Mean_Membrane", row, mean_membrane);
+        setResult("Mean_Cytoplasm", row, mean_cytoplasm);
+        setResult("Corr_Membrane", row, corr_membrane);
+        setResult("Corr_Cytoplasm", row, corr_cytoplasm);
+        setResult("Ratio", row, ratio);
+        setResult("Corr_Ratio", row, corr_ratio);
+
+        print("Cell " + i + " | Color: " + hex_colors[i] + " | Raw ratio: " + ratio + " | Corr ratio: " + corr_ratio);
+    }
+
+    // ============================================
+    // STEP 6 - CYTOPLASM OVERLAY
+    // ============================================
+    selectWindow(membrane_title);
+    run("Duplicate...", "title=MembraneForCytoOverlay");
+    run("Red");
+    run("RGB Color");
+    selectWindow("CytoMaskAll");
+    run("Duplicate...", "title=CytoMaskCopy");
+    selectWindow("MembraneForCytoOverlay");
+    run("Add Image...", "image=CytoMaskCopy x=0 y=0 opacity=50");
+    rename("Cyto_with_Membrane");
+    saveAs("Tiff", save_path + cyto_overlay_name);
+    rename("Cyto_with_Membrane");
+    selectWindow("Cyto_with_Membrane");
+    close();
+    selectWindow("CytoMaskCopy");
+    close();
+    selectWindow("CytoMaskAll");
+    close();
+    selectWindow("AnnulusBinary");
+    close();
+    selectWindow("Annulus");
+    close();
+
+    print("Saved cytoplasm overlay image");
+    print("Cells measured this round: " + cell_count);
+    updateResults();
+}
+
+// ============================================
+// STEP 7 - SAVE CSV
+// ============================================
+saveAs("Results", save_path + csv_name);
+print("-----------------------------");
+print("Total rows saved: " + nResults);
+print("Saved CSV to: " + save_path + csv_name);
+
+// ============================================
+// STEP 8 - CLOSE ALL WORKING IMAGES
+// ============================================
+if (isOpen("GlasbeyMap")) { selectWindow("GlasbeyMap"); close(); }
+if (isOpen("LabeledCellMap")) { selectWindow("LabeledCellMap"); close(); }
+if (isOpen(mask_title)) { selectWindow(mask_title); close(); }
+if (isOpen("Membrane_with_Annulus")) { selectWindow("Membrane_with_Annulus"); close(); }
+if (isOpen("Cyto_with_Membrane")) { selectWindow("Cyto_with_Membrane"); close(); }
+if (isOpen("Annulus")) { selectWindow("Annulus"); close(); }
+
+
+print("Done!");

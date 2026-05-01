@@ -1,0 +1,126 @@
+// ============================================
+// EXPERIMENT SETTINGS - EDIT THESE ONLY
+// ============================================
+exp_date = "2026_03_16";
+condition = "max-22";
+cell_number = "2";
+magnification = "100x";
+experimenter = "mgm";
+
+// ============================================
+// SAVE PATH
+// ============================================
+save_path = "F:\\exon22_imaging_data\\";
+
+// ============================================
+// AUTO-BUILD BASE NAME
+// ============================================
+img_base = exp_date + "_" + condition + "_" + experimenter + "_" + magnification + "_" + cell_number;
+print("Base name: " + img_base);
+print("Saving to: " + save_path);
+
+// ============================================
+// STEP 1 - GET ACTIVE IMAGE INFO
+// ============================================
+current_title = getTitle();
+print("Working with: " + current_title);
+
+getDimensions(width, height, channels, slices, frames);
+print("Channels: " + channels);
+print("Z slices: " + slices);
+
+if (channels != 4) {
+    waitForUser("WARNING: Expected 4 channels but found " + channels + ". Make sure the correct image is open and active, then click OK to continue anyway.");
+}
+
+// ============================================
+// STEP 2 - SELECT Z SLICE
+// ============================================
+waitForUser("Scroll to your equatorial z-slice using the slider at the bottom of the image, then click OK");
+
+Stack.getPosition(channel, slice_num, frame);
+print("Detected slice: " + slice_num);
+
+slice_num = getNumber("Confirm z-slice number (or correct it):", slice_num);
+print("Using slice: " + slice_num);
+
+// ============================================
+// STEP 3 - CLOSE ANY LEFTOVER WINDOWS
+// ============================================
+suffixes = newArray("_yfp.tif", "_mch.tif", "_647.tif", "_bf.tif");
+
+for (c = 0; c < suffixes.length; c++) {
+    check_name = img_base + suffixes[c];
+    if (isOpen(check_name)) {
+        selectWindow(check_name);
+        close();
+        print("Closed existing window: " + check_name);
+    }
+}
+
+// ============================================
+// STEP 4 - EXTRACT AND SAVE EACH CHANNEL
+// ============================================
+temp_names = newArray("temp_ch1", "temp_ch2", "temp_ch3", "temp_ch4");
+
+for (c = 1; c <= 4; c++) {
+    selectWindow(current_title);
+
+    // Go to correct channel and slice
+    Stack.setChannel(c);
+    Stack.setSlice(slice_num);
+
+    // Duplicate with neutral temp name
+    run("Duplicate...", "title=" + temp_names[c-1] + " duplicate channels=" + c + " slices=" + slice_num);
+
+    // If result is still a stack flatten it
+    getDimensions(w, h, ch, sl, fr);
+    if (sl > 1) {
+        selectWindow(temp_names[c-1]);
+        setSlice(slice_num);
+        run("Duplicate...", "title=TempFlat use");
+        selectWindow(temp_names[c-1]);
+        close();
+        selectWindow("TempFlat");
+        rename(temp_names[c-1]);
+    }
+
+    // Save and rename window to final name
+    out_name = img_base + suffixes[c-1];
+    selectWindow(temp_names[c-1]);
+    saveAs("Tiff", save_path + out_name);
+    rename(out_name);
+
+    print("Saved and window named: " + out_name);
+}
+
+// ============================================
+// STEP 5 - RUN CELLPOSE ON YFP CHANNEL
+// ============================================
+yfp_window = img_base + "_yfp.tif";
+selectWindow(yfp_window);
+print("YFP image ready for segmentation");
+
+waitForUser("Run Cellpose from Plugins > BIOP > Cellpose with your usual settings then click OK when done");
+
+// Rename mask to correct convention
+mask_input = save_path + img_base + "_yfp_cp_masks.tif";
+mask_output = save_path + img_base + "_yfp-cellpose.tif";
+
+if (File.exists(mask_input)) {
+    File.rename(mask_input, mask_output);
+    print("Renamed mask to: " + img_base + "_yfp-cellpose.tif");
+} else {
+    print("WARNING: Mask not found at: " + mask_input);
+    print("Please rename manually to: " + mask_output);
+}
+
+print("-----------------------------");
+print("Preprocessing complete!");
+print("Files saved:");
+print("  " + img_base + "_yfp.tif");
+print("  " + img_base + "_mch.tif");
+print("  " + img_base + "_647.tif");
+print("  " + img_base + "_bf.tif");
+print("  " + img_base + "_yfp-cellpose.tif");
+print("You can now run the analysis macro.");
